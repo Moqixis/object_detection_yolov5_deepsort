@@ -2,7 +2,9 @@
 import argparse
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"  # 指定第一块gpu
+
+import numpy as np
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # 指定第一块gpu
 
 # limit the number of cpus used by high performance libraries
 os.environ["OMP_NUM_THREADS"] = "1"
@@ -132,10 +134,15 @@ def run(
     # Run tracking
     model.warmup(imgsz=(1 if pt else nr_sources, 3, *imgsz))  # warmup
     dt, seen = [0.0, 0.0, 0.0, 0.0], 0
+
     real_fps = 0    # 计算FPS
     num_bbx = []    # 记录每帧bbx数
     xy = []         # 记录中心点坐标
     preds = []      # 记录是否有预测框（漏检率误诊率用）
+    # 初始化当前帧的前两帧的预测信息
+    lastFrame1 = None
+    lastFrame2 = None
+
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         t1 = time_sync()
         im = torch.from_numpy(im).to(device)
@@ -151,6 +158,22 @@ def run(
         pred = model(im, augment=opt.augment, visualize=visualize)
         t3 = time_sync()
         dt[1] += t3 - t2
+
+        # 如果第一二帧是None，对其进行初始化，计算第一二帧的不同
+        if lastFrame2 is None:
+            if lastFrame1 is None:
+                lastFrame1 = pred
+            else:
+                lastFrame2 = pred
+                # 前两帧的预测信息添加到pred里面
+                pred = np.row_stack((pred.cpu().numpy(),lastFrame1.cpu().numpy()))
+                pred = np.row_stack((pred,lastFrame2.cpu().numpy()))
+                # numpy格式转换回gpu tensor
+                pred = torch.from_numpy(pred).cuda()
+            continue
+        # 当前帧设为下一帧的前帧,前帧设为下一帧的前前帧
+        lastFrame1 = lastFrame2
+        lastFrame2 = pred
 
         # Apply NMS
         pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, opt.classes, opt.agnostic_nms, max_det=opt.max_det)
@@ -193,6 +216,7 @@ def run(
                 if sum_bbox4 == 0:       # 4帧全空
                     im0 = im             # 输出原图
                     FLAG = 0             # 跳过画框
+                    s = 'No detections'
 
             # 计算连续两帧预测框中心点距离
             if FLAG:
@@ -206,13 +230,14 @@ def run(
                 if dis > mean_dis:  # 与上一帧的距离大于均值
                     im0 = im             # 输出原图
                     FLAG = 0             # 跳过画框
+                    s = 'No detections'
             # break
 
-            # 统计预测框（漏检率误诊率用）
-            if FLAG:
-                preds.append(1)
-            else:
-                preds.append(0)
+            # # 统计预测框（漏检率误诊率用）
+            # if FLAG:
+            #     preds.append(1)
+            # else:
+            #     preds.append(0)
 
             if FLAG:
                 # Rescale boxes from img_size to im0 size
@@ -265,9 +290,16 @@ def run(
             else:
                 deepsort_list[i].increment_ages()
                 LOGGER.info('No detections')
+                s == 'No detections'
+            
+            # 统计预测框（漏检率误诊率用）
+            if s == 'No detections':
+                preds.append(0)
+            else:
+                preds.append(1)
 
             # Stream results
-            im0 = annotator.result()
+            im0 = annotator.result()  # Return annotated image as array
             if show_vid:
                 cv2.imshow(str(p), im0)
                 cv2.waitKey(1)  # 1 millisecond
@@ -319,9 +351,9 @@ def run(
 def parse_opt():
     parser = argparse.ArgumentParser()
     # 修改yolo权重路径
-    parser.add_argument('--yolo-weights', nargs='+', type=str, default='/data/anhui-ai/lhq/yolov5/runs/train/exp/weights/best.pt', help='model.pt path(s)')
+    parser.add_argument('--yolo-weights', nargs='+', type=str, default='/data/anhui-ai/lhq/yolov5/runs/train/exp2/weights/best.pt', help='model.pt path(s)')
     # 修改deep_sort权重路径
-    parser.add_argument('--deep-sort-weights', type=str, default='/home/anhui-ai/lhq/Yolov5_DeepSort_OSNet/deep_sort_pytorch/deep_sort/deep/checkpoint/ckpt.t7')
+    parser.add_argument('--deep-sort-weights', type=str, default='/data/anhui-ai/lhq/yolov5/deepsort/osnet_x0_25_imagenet.pth')
     parser.add_argument('--config-deepsort', type=str, default='deep_sort/configs/deep_sort.yaml')
     # 修改待检测视频路径
     parser.add_argument('--source', type=str, default='/data/anhui-ai/lhq/video/0209.mp4', help='file/dir/URL/glob, 0 for webcam')  
