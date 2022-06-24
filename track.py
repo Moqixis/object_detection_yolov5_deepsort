@@ -139,9 +139,6 @@ def run(
     num_bbx = []    # 记录每帧bbx数
     xy = []         # 记录中心点坐标
     preds = []      # 记录是否有预测框（漏检率误诊率用）
-    # 初始化当前帧的前两帧的预测信息
-    lastFrame1 = None
-    lastFrame2 = None
 
     for frame_idx, (path, im, im0s, vid_cap, s) in enumerate(dataset):
         t1 = time_sync()
@@ -158,22 +155,6 @@ def run(
         pred = model(im, augment=opt.augment, visualize=visualize)
         t3 = time_sync()
         dt[1] += t3 - t2
-
-        # 如果第一二帧是None，对其进行初始化，计算第一二帧的不同
-        if lastFrame2 is None:
-            if lastFrame1 is None:
-                lastFrame1 = pred
-            else:
-                lastFrame2 = pred
-                # 前两帧的预测信息添加到pred里面
-                pred = np.row_stack((pred.cpu().numpy(),lastFrame1.cpu().numpy()))
-                pred = np.row_stack((pred,lastFrame2.cpu().numpy()))
-                # numpy格式转换回gpu tensor
-                pred = torch.from_numpy(pred).cuda()
-            continue
-        # 当前帧设为下一帧的前帧,前帧设为下一帧的前前帧
-        lastFrame1 = lastFrame2
-        lastFrame2 = pred
 
         # Apply NMS
         pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, opt.classes, opt.agnostic_nms, max_det=opt.max_det)
